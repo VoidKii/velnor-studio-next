@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { startTransition, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 // YouTube and creator-supplied thumbnail URLs are dynamic; optimizing arbitrary remote hosts would require broader image-host configuration.
 /* eslint-disable @next/next/no-img-element */
 import {
@@ -18,6 +18,13 @@ type ScriptDraft = { id: string; title: string; content: string; updatedAt: numb
 type SearchResult = { id: string; title: string; channel: string; publishedAt?: string; thumbnail?: string; description?: string; subscribers?: string | null; hiddenSubscriberCount?: boolean; videoCount?: string | null; viewCount?: string | null };
 type PackagingDraft = { title: string; comparisonTitle: string; description: string; tags: string; thumbnailUrl: string };
 type IdeasUpdate = Idea[] | ((ideas: Idea[]) => Idea[]);
+type YoutubeAccount = {
+  configured: boolean;
+  connected: boolean;
+  channel?: { id: string; title: string; thumbnail: string | null; subscriberCount: string | null };
+  analytics?: { views28Days: number | null; subscribersGained28Days: number | null; startDate: string; endDate: string } | null;
+  error?: string;
+};
 
 const IDEA_STORAGE_KEY = "velnor.ideas.v1";
 const SCRIPT_STORAGE_KEY = "velnor.scripts.v1";
@@ -180,6 +187,9 @@ export default function Home() {
   const [searchError, setSearchError] = useState("");
   const [searchAsOf, setSearchAsOf] = useState<string | null>(null);
   const [packagingChecked, setPackagingChecked] = useState(false);
+  const [youtubeAccount, setYoutubeAccount] = useState<YoutubeAccount>({ configured: false, connected: false });
+  const [youtubeAction, setYoutubeAction] = useState<"idle" | "connecting" | "disconnecting">("idle");
+  const [youtubeNotice, setYoutubeNotice] = useState("");
 
   useEffect(() => {
     let current = true;
@@ -187,6 +197,30 @@ export default function Home() {
       .then((response) => response.json())
       .then((data: { aiConfigured?: unknown; youtubeConfigured?: unknown }) => { if (current) { setAiConfigured(data.aiConfigured === true); setYoutubeConfigured(data.youtubeConfigured === true); } })
       .catch(() => { if (current) { setAiConfigured(false); setYoutubeConfigured(false); } });
+    return () => { current = false; };
+  }, []);
+
+  useEffect(() => {
+    let current = true;
+    const oauthResult = new URLSearchParams(window.location.search).get("youtube");
+    if (oauthResult) {
+      const notices: Record<string, string> = {
+        connected: "Your YouTube channel is connected. Velnor has read-only access to channel details and analytics.",
+        cancelled: "You cancelled YouTube access. Nothing was connected.",
+        invalid_state: "The connection link expired or could not be verified. Please try again.",
+        channel_unavailable: "Google authorized access, but Velnor could not read the channel. Check that YouTube Data API v3 is enabled in your Google Cloud project.",
+        failed: "YouTube could not be connected. Check the Google OAuth setup and try again.",
+      };
+      startTransition(() => {
+        setSection("settings");
+        setYoutubeNotice(notices[oauthResult] ?? "YouTube connection could not be completed.");
+      });
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+    fetch("/api/youtube/account", { cache: "no-store" })
+      .then(async (response) => ({ response, data: await response.json() as YoutubeAccount }))
+      .then(({ data }) => { if (current) setYoutubeAccount(data); })
+      .catch(() => { if (current) setYoutubeAccount({ configured: false, connected: false, error: "status_unavailable" }); });
     return () => { current = false; };
   }, []);
 
@@ -290,6 +324,35 @@ export default function Home() {
     }
   }
 
+  async function connectYoutube() {
+    setYoutubeAction("connecting");
+    setYoutubeNotice("");
+    try {
+      const response = await fetch("/api/youtube/oauth/start", { cache: "no-store" });
+      const data = await response.json() as { authorizationUrl?: string; error?: string };
+      if (!response.ok || !data.authorizationUrl) throw new Error(data.error ?? "YouTube connection is not ready yet.");
+      window.location.assign(data.authorizationUrl);
+    } catch (error) {
+      setYoutubeNotice(error instanceof Error ? error.message : "YouTube connection could not be started.");
+      setYoutubeAction("idle");
+    }
+  }
+
+  async function disconnectYoutube() {
+    setYoutubeAction("disconnecting");
+    setYoutubeNotice("");
+    try {
+      const response = await fetch("/api/youtube/account", { method: "DELETE" });
+      if (!response.ok) throw new Error("The connection could not be cleared. Try again.");
+      setYoutubeAccount((account) => ({ ...account, connected: false, channel: undefined, analytics: undefined, error: undefined }));
+      setYoutubeNotice("Your YouTube connection was removed from this browser.");
+    } catch (error) {
+      setYoutubeNotice(error instanceof Error ? error.message : "The connection could not be removed.");
+    } finally {
+      setYoutubeAction("idle");
+    }
+  }
+
   function scheduleIdea(id: string, date: string) {
     setIdeas((items) => items.map((idea) => idea.id === id ? { ...idea, date } : idea));
   }
@@ -332,12 +395,12 @@ export default function Home() {
             <div className="heading-actions">{section === "overview" && <button className="button button-primary" onClick={() => setSection("research")}><Sparkles size={15} /> Find an idea</button>}</div>
           </div>
 
-          {section === "overview" && <Overview ideas={ideas} scheduled={scheduled} onOpen={setSection} />}
+          {section === "overview" && <Overview ideas={ideas} scheduled={scheduled} youtubeAccount={youtubeAccount} onOpen={setSection} />}
           {section === "research" && <Research topic={topic} setTopic={(value) => { generationRef.current += 1; setGenerated([]); setIdeaStatus("idle"); setIdeaError(""); setTopic(value); }} audience={audience} setAudience={(value) => { generationRef.current += 1; setGenerated([]); setIdeaStatus("idle"); setIdeaError(""); setAudience(value); }} videoFormat={videoFormat} setVideoFormat={(value) => { generationRef.current += 1; setGenerated([]); setIdeaStatus("idle"); setIdeaError(""); setVideoFormat(value); }} videoGoal={videoGoal} setVideoGoal={(value) => { generationRef.current += 1; setGenerated([]); setIdeaStatus("idle"); setIdeaError(""); setVideoGoal(value); }} constraints={constraints} setConstraints={(value) => { generationRef.current += 1; setGenerated([]); setIdeaStatus("idle"); setIdeaError(""); setConstraints(value); }} generated={generated} generatedSource={generatedSource} makePrompts={makePrompts} makeAiPrompts={makeAiPrompts} aiConfigured={aiConfigured} ideaStatus={ideaStatus} ideaError={ideaError} storageNotice={storageNotice} onSave={saveIdea} search={search} setSearch={setSearch} searchType={searchType} setSearchType={(type) => { setSearchType(type); setResults([]); setSearchAsOf(null); setSearchStatus("idle"); setSearchError(""); }} findVideos={findVideos} searchStatus={searchStatus} searchError={searchError} results={results} searchAsOf={searchAsOf} />}
           {section === "packaging" && <Packaging draft={packagingDraft} update={updatePackaging} checked={packagingChecked} setChecked={setPackagingChecked} storageNotice={storageNotice} />}
           {section === "library" && <Library ideas={ideas} setIdeas={setIdeas} scripts={scripts} setScripts={setScripts} onSchedule={scheduleIdea} onOpenResearch={() => setSection("research")} storageNotice={storageNotice} />}
           {section === "calendar" && <Calendar ideas={ideas} onSchedule={scheduleIdea} onOpenLibrary={() => setSection("library")} storageNotice={storageNotice} />}
-          {section === "settings" && <Settings aiConfigured={aiConfigured} youtubeConfigured={youtubeConfigured} />}
+          {section === "settings" && <Settings aiConfigured={aiConfigured} youtubeConfigured={youtubeConfigured} youtubeAccount={youtubeAccount} youtubeAction={youtubeAction} youtubeNotice={youtubeNotice} onConnectYoutube={connectYoutube} onDisconnectYoutube={disconnectYoutube} />}
 
           <footer className="page-footer"><span>Saved work stays in this browser.</span></footer>
         </div>
@@ -346,15 +409,20 @@ export default function Home() {
   );
 }
 
-function Overview({ ideas, scheduled, onOpen }: { ideas: Idea[]; scheduled: Idea[]; onOpen: (section: Section) => void }) {
+function Overview({ ideas, scheduled, youtubeAccount, onOpen }: { ideas: Idea[]; scheduled: Idea[]; youtubeAccount: YoutubeAccount; onOpen: (section: Section) => void }) {
+  const connected = youtubeAccount.connected && Boolean(youtubeAccount.channel);
+  const subscribers = connected ? formatCount(youtubeAccount.channel?.subscriberCount) : "—";
+  const views = youtubeAccount.analytics?.views28Days;
+  const viewCount = typeof views === "number" ? formatCount(String(views)) : "—";
+  const period = youtubeAccount.analytics ? `${shortDate(youtubeAccount.analytics.startDate)} – ${shortDate(youtubeAccount.analytics.endDate)}` : "Waiting for channel data";
   return <>
-    <div className="demo-note"><span className="demo-note-icon"><CircleHelp size={16} /></span><div><b>Channel not connected</b><span>Private analytics aren’t available. This dashboard never shows sample performance figures.</span></div><button className="text-link" onClick={() => onOpen("settings")}>Connection options <ArrowRight size={14} /></button></div>
+    <div className="demo-note"><span className="demo-note-icon"><CircleHelp size={16} /></span><div><b>{connected ? `Connected · ${youtubeAccount.channel?.title}` : "Channel not connected"}</b><span>{connected ? "Read-only YouTube channel access is active in this browser." : "Connect your channel to see real analytics. This dashboard never shows sample performance figures."}</span></div><button className="text-link" onClick={() => onOpen("settings")}>{connected ? "Manage connection" : "Connect YouTube"} <ArrowRight size={14} /></button></div>
     <section className="metric-grid" aria-label="Your saved work and channel connection status">
-      {[{ label: "Subscribers", value: "—", note: "Connect a channel" }, { label: "Views this month", value: "—", note: "Connect a channel" }, { label: "Ideas saved", value: String(ideas.length), note: "In this browser" }, { label: "Scheduled", value: String(scheduled.length), note: "Planned publish dates" }].map(({ label, value, note }) => <article className="metric-card" key={label}><span className="metric-label">{label}</span><strong className="metric-value">{value}</strong><span className="metric-note">{note}</span></article>)}
+      {[{ label: "Subscribers · public", value: subscribers, note: connected ? (youtubeAccount.channel?.subscriberCount ? "Rounded count from YouTube" : "Hidden by channel") : "Connect a channel" }, { label: "Views · 28 days", value: viewCount, note: youtubeAccount.analytics ? period : connected ? "Analytics unavailable" : "Connect a channel" }, { label: "Ideas saved", value: String(ideas.length), note: "In this browser" }, { label: "Scheduled", value: String(scheduled.length), note: "Planned publish dates" }].map(({ label, value, note }) => <article className="metric-card" key={label}><span className="metric-label">{label}</span><strong className="metric-value">{value}</strong><span className="metric-note">{note}</span></article>)}
     </section>
     <div className="dashboard-grid">
       <section className="surface performance-panel"><div className="surface-heading"><div><p className="eyebrow">YOUR CHANNEL</p><h2>Channel performance</h2></div></div>
-        <div className="chart-empty"><b>Connect your channel to see your performance.</b><span>Owner-authorized analytics are not connected. No example figures are shown.</span><button className="text-link" onClick={() => onOpen("settings")}>View connection options <ArrowRight size={14} /></button></div>
+        {connected ? <div className="chart-empty"><div className="youtube-profile">{youtubeAccount.channel?.thumbnail && <img src={youtubeAccount.channel.thumbnail} alt="" width="38" height="38" />}<div><b>{youtubeAccount.channel?.title}</b><span>Connected channel</span></div></div>{youtubeAccount.analytics ? <><span>In the last 28 complete days, the channel received {viewCount} views and {youtubeAccount.analytics.subscribersGained28Days === null ? "no subscribers gained reported" : `${formatCount(String(youtubeAccount.analytics.subscribersGained28Days))} subscribers gained`}. These are YouTube Analytics figures for {period}.</span><small className="metric-note">Analytics can take time to update. Figures come directly from YouTube.</small></> : <span>{youtubeAccount.error === "analytics_api_unavailable" ? "Enable the YouTube Analytics API in Google Cloud, then reload this dashboard." : "Channel connected. YouTube Analytics is not available yet; no sample figures are shown."}</span>}</div> : <div className="chart-empty"><b>Connect your channel to see your performance.</b><span>Owner-authorized analytics are not connected. No example figures are shown.</span><button className="text-link" onClick={() => onOpen("settings")}>Connect YouTube <ArrowRight size={14} /></button></div>}
       </section>
       <section className="surface next-panel"><div className="surface-heading"><div><p className="eyebrow">NEXT STEPS</p><h2>Keep the work moving</h2></div></div><button className="step-row" onClick={() => onOpen("research")}><span><b>Explore an idea</b><small>Shape an audience question into a video</small></span><ArrowRight size={15} /></button><button className="step-row" onClick={() => onOpen("packaging")}><span><b>Refine its packaging</b><small>Clarify the promise and details</small></span><ArrowRight size={15} /></button><button className="step-row" onClick={() => onOpen("calendar")}><span><b>Plan a publish date</b><small>Give a saved idea a next step</small></span><ArrowRight size={15} /></button></section>
     </div>
@@ -478,12 +546,13 @@ function Calendar({ ideas, onSchedule, onOpenLibrary, storageNotice }: { ideas: 
     <aside className="next-up"><p className="eyebrow">NOT ON THE CALENDAR YET</p><h2>Ideas with room to grow.</h2>{unscheduled.length ? unscheduled.slice(0, 4).map((idea) => <div className="unscheduled-item" key={idea.id}><div><b>{idea.title}</b><small>{idea.angle}</small></div><label className="sr-only" htmlFor={`cal-${idea.id}`}>Choose a date for {idea.title}</label><input id={`cal-${idea.id}`} type="date" onChange={(event) => event.target.value && onSchedule(idea.id, event.target.value)} /></div>) : <div className="calendar-nudge"><p>Save an idea first and keep it close here.</p><button className="text-link" onClick={onOpenLibrary}>Go to saved work <ArrowRight size={13} /></button></div>}</aside></div>;
 }
 
-function Settings({ aiConfigured, youtubeConfigured }: { aiConfigured: boolean | null; youtubeConfigured: boolean }) {
+function Settings({ aiConfigured, youtubeConfigured, youtubeAccount, youtubeAction, youtubeNotice, onConnectYoutube, onDisconnectYoutube }: { aiConfigured: boolean | null; youtubeConfigured: boolean; youtubeAccount: YoutubeAccount; youtubeAction: "idle" | "connecting" | "disconnecting"; youtubeNotice: string; onConnectYoutube: () => void; onDisconnectYoutube: () => void }) {
+  const connected = youtubeAccount.connected && Boolean(youtubeAccount.channel);
   return <div className="settings-layout"><section className="settings-main" aria-label="Studio settings">
     <div className="setting-group"><h2>Workspace</h2><div className="setting-row"><div><b>Independent creator</b><small>Your workspace is stored locally in this browser.</small></div><span className="setting-status">Active</span></div></div>
     <div className="setting-group"><h2>Public research</h2><div className="setting-row"><div><b>YouTube Data API</b><small>Search public videos and channel profiles.</small></div><span className="setting-status">{youtubeConfigured ? "Key present · unverified" : "Not configured"}</span></div><div className="setting-details"><p>Set <code>YOUTUBE_API_KEY</code> in your local <code>.env.local</code> file to enable search. The key stays on the server. Search calls use Google API quota.</p><a href="https://console.cloud.google.com/" target="_blank" rel="noreferrer">Google Cloud Console <ArrowUpRight size={14} /></a></div>
       <div className="setting-row"><div><b>OpenAI idea drafting</b><small>Optional brief-based AI suggestions.</small></div><span className="setting-status">{aiConfigured === null ? "Checking…" : aiConfigured ? "Key present · unverified" : "Not configured"}</span></div><div className="setting-details"><p>Set <code>OPENAI_API_KEY</code> on the server to enable it. You can also set <code>OPENAI_IDEA_MODEL</code>. A brief is sent only when you select OpenAI drafting and may incur API charges. Local idea drafts need no key.</p></div></div>
-    <div className="setting-group"><h2>Channel and storage</h2><div className="setting-row"><div><b>Private channel analytics</b><small>Owner-authorized channel performance and audience reports.</small></div><span className="setting-status">Unavailable</span></div><div className="setting-details"><p>No OAuth or YouTube Analytics integration is implemented. This workspace does not request channel permissions or show simulated private metrics.</p></div>
+    <div className="setting-group"><h2>Channel and storage</h2><div className="setting-row"><div><b>YouTube channel</b><small>{connected ? youtubeAccount.channel?.title : "Connect your own channel to see its analytics."}</small></div><span className="setting-status">{connected ? "Connected" : youtubeAccount.configured ? "Not connected" : "Needs setup"}</span></div><div className="setting-details"><p>Velnor requests read-only access to your channel profile and YouTube Analytics. It does not edit videos, publish content or access revenue data. Your encrypted sign-in stays in this browser, not in local storage, and the dashboard displays figures returned by YouTube.</p>{!youtubeAccount.configured && <p className="youtube-setup-note">To enable connection, configure Google OAuth on the server: <code>GOOGLE_CLIENT_ID</code>, <code>GOOGLE_CLIENT_SECRET</code>, <code>GOOGLE_REDIRECT_URI</code>, and <code>YOUTUBE_TOKEN_ENCRYPTION_KEY</code>. Enable YouTube Data API v3 and YouTube Analytics API in the same Google Cloud project. For this live site, the Google callback URL is <code>https://velnor-studio-next.vercel.app/api/youtube/oauth/callback</code>.</p>}{youtubeAccount.error === "analytics_api_unavailable" && <p className="youtube-setup-note">The channel is connected, but the YouTube Analytics API is not responding. Confirm that it is enabled for your Google Cloud project and that your account granted analytics access.</p>}{youtubeAccount.error === "reconnect_required" && <p className="youtube-setup-note">Google access expired or was revoked. Reconnect your channel to continue seeing analytics.</p>}{youtubeNotice && <p className={youtubeNotice.includes("connected") ? "youtube-message" : "youtube-message youtube-message-error"} role="status">{youtubeNotice}</p>}<div className="youtube-actions">{connected ? <button className="button button-secondary" onClick={onDisconnectYoutube} disabled={youtubeAction !== "idle"}>{youtubeAction === "disconnecting" ? "Disconnecting…" : "Disconnect YouTube"}</button> : <button className="button button-primary" onClick={onConnectYoutube} disabled={!youtubeAccount.configured || youtubeAction !== "idle"}>{youtubeAction === "connecting" ? "Opening Google…" : "Connect YouTube"}</button>}</div><small className="metric-note">Access is read-only. Disconnecting removes Velnor’s saved connection and asks Google to revoke its token.</small></div>
       <div className="setting-row"><div><b>Cloud save and sign-in</b><small>Sync your work across devices.</small></div><span className="setting-status">Unavailable</span></div><div className="setting-details"><p>Supabase is not wired up. Ideas, scripts, publish dates and packaging drafts stay in this browser. Velnor does not invent analytics, search volumes or title rankings.</p></div></div>
   </section></div>;
 }

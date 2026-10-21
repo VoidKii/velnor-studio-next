@@ -12,7 +12,7 @@ A local-first research and planning workspace for YouTube creators. It keeps the
 | Packaging lab | Edits two title drafts side by side, shows character/word counts and editorial comparison notes, and offers a human checklist. Drafts persist in this browser. Thumbnail preview only loads a supplied HTTPS image URL; it does not analyze the image. | No |
 | Public YouTube research | Searches public videos or channels through YouTube Data API v3. Channel profile counts are the fields returned by YouTube and are shown as an API snapshot. | `YOUTUBE_API_KEY` |
 | Saved work, scripts and calendar | Saves ideas, script drafts, and publish dates in this browser. They are not synced to another device. | No |
-| Private channel analytics | No owner-authorized OAuth or YouTube Analytics reports are implemented. | Unavailable |
+| Private channel analytics | Optional read-only Google OAuth connection. The dashboard requests the current subscriber count and channel views/subscribers gained for the last 28 complete days. | Google OAuth client, encryption key, and YouTube APIs |
 | Sign-in and cloud sync | Supabase is listed as a possible future integration but is not connected or used by this MVP. | Unavailable |
 
 There are no fabricated keyword volumes, trends, thumbnail scores, YouTube rankings or private analytics. The local idea framework is deterministic editorial scaffolding; it does not claim to be AI research.
@@ -54,15 +54,40 @@ The server validates the query, caps public search result counts, limits upstrea
 
 An API key being present is not proof of a valid connection; an actual search tests it. Missing configuration and upstream errors have explicit UI states.
 
+## Connect your own YouTube channel
+
+Velnor uses Google's server-side OAuth authorization-code flow. The permission request is read-only for your channel profile and YouTube Analytics. It does not request permission to edit videos, upload, publish, manage the channel, or view revenue. The refresh token is stored only in an encrypted, HttpOnly, SameSite cookie in the browser that completed the connection; it is never put in local storage or returned to the page. Disconnecting clears that cookie and asks Google to revoke the token. This is a browser-local connection, not cloud sign-in or cross-device sync.
+
+To enable it:
+
+1. In Google Cloud, select a project, enable **YouTube Data API v3** and **YouTube Analytics API**, and configure the OAuth consent screen. For personal testing, select the testing audience and add your Google account as a test user if Google requires it.
+2. Create an OAuth client of type **Web application**. Add the exact callback URL `http://localhost:3000/api/youtube/oauth/callback` for local use. For the deployed Velnor site, add `https://velnor-studio-next.vercel.app/api/youtube/oauth/callback` as another authorized redirect URI.
+3. Put the client ID, client secret, callback URI, and encryption key into the server environment. Use `http://localhost:3000/api/youtube/oauth/callback` locally and `https://velnor-studio-next.vercel.app/api/youtube/oauth/callback` on Vercel. The callback URI must match an authorized URI in Google Cloud.
+
+Example local settings in `.env.local`:
+
+```dotenv
+GOOGLE_CLIENT_ID=your-web-client-id
+GOOGLE_CLIENT_SECRET=your-web-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:3000/api/youtube/oauth/callback
+YOUTUBE_TOKEN_ENCRYPTION_KEY=your-private-random-key
+```
+
+Generate an encryption key in a terminal with `node -e "process.stdout.write(require('crypto').randomBytes(32).toString('base64url'))"`. Copy that output directly into your private server environment; never commit it. In Vercel, add the same variables under the project's server environment settings, using the deployed callback URL, then redeploy. Restart the local server after changing `.env.local`.
+
+The Google OAuth app may show an unverified-app notice while it is in testing. Add your own account as a test user and continue only if you recognize the app and the read-only access being requested. Google may require app verification before the connection can be offered broadly to other people.
+
+The dashboard reports values returned by the YouTube APIs; missing report rows remain unavailable instead of being filled with zeros. Subscriber counts may be hidden or rounded by YouTube. Google can take time to finalize recent analytics, so the dashboard uses the last 28 complete UTC days and labels that period. The OAuth connection does not use the public research API key.
+
 ## Persistence and private analytics
 
 Saved ideas, scripts, calendar dates and packaging drafts use `localStorage` in the active browser. Clearing browser data removes those copies. Supabase is not wired into the app; its blank example variables are reserved only. Do not add a Supabase service-role key to browser-visible configuration.
 
-Private channel analytics need a YouTube owner-authorized OAuth flow and the appropriate YouTube Analytics API scopes. This application does not request those permissions or show invented analytics.
+Private channel analytics require the optional Google OAuth configuration above. If it is absent, the app keeps the honest disconnected state and shows no sample figures.
 
 ## Security and public deployment
 
-Provider keys are read only by Next.js server routes. The public YouTube search and optional AI routes do not include user sign-in or shared, distributed rate limiting. A server-side key prevents browser exposure, but it does not prevent anonymous visitors from consuming that key's quota or API spend. Before enabling either key on a public deployment, put the routes behind authenticated access and hosting-level rate limits. For a private local workspace, keep the app bound to your trusted development environment and use provider-side key restrictions and quotas.
+Provider keys and OAuth secrets are read only by Next.js server routes. Public YouTube search and optional AI routes do not include user sign-in or shared, distributed rate limiting. A server-side key prevents browser exposure, but it does not prevent anonymous visitors from consuming that key's quota or API spend. Before enabling either key on a public deployment, put those routes behind authenticated access and hosting-level rate limits. For a private local workspace, keep the app bound to your trusted development environment and use provider-side key restrictions and quotas.
 
 Only HTTPS thumbnail URLs are rendered, with referrer information suppressed. The image request goes from the browser directly to the URL's host. Drafts remain in local browser storage.
 
