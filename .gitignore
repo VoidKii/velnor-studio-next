@@ -5,6 +5,11 @@ out/
 dist/
 .env*
 !.env.example
+.vercel/
+*.pem
+*.key
+*.p12
+*.pfx
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
